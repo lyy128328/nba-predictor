@@ -2,11 +2,20 @@
 
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  clearBrowserSession,
+  getRememberedPools,
+  getStoredUserSession,
+  RememberedPool,
+  rememberPool,
+  setStoredUserSession
+} from "@/lib/browser-session";
 import { AdminPoolSummary, PlayoffTemplateSummary } from "@/lib/types";
 
 type CreateJoinResponse = {
   pool: {
     id: string;
+    name: string;
     code: string;
   };
   user: {
@@ -20,8 +29,6 @@ type CreateOptionsResponse = {
   templates: PlayoffTemplateSummary[];
 };
 
-const SESSION_KEY = "nba-predictor-user";
-
 export default function LandingPage() {
   const router = useRouter();
   const [displayName, setDisplayName] = useState("");
@@ -31,9 +38,19 @@ export default function LandingPage() {
   const [templateId, setTemplateId] = useState("");
   const [sourcePoolId, setSourcePoolId] = useState("");
   const [createOptions, setCreateOptions] = useState<CreateOptionsResponse>({ pools: [], templates: [] });
+  const [rememberedPools, setRememberedPools] = useState<RememberedPool[]>([]);
   const [loadingAction, setLoadingAction] = useState<"create" | "join" | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const storedUser = getStoredUserSession();
+    if (storedUser) {
+      setDisplayName(storedUser.displayName);
+    }
+
+    setRememberedPools(getRememberedPools());
+  }, []);
 
   useEffect(() => {
     async function loadCreateOptions() {
@@ -66,6 +83,13 @@ export default function LandingPage() {
     return "Starter bracket";
   }, [loadingOptions]);
 
+  function handleClearBrowserSession() {
+    clearBrowserSession();
+    setDisplayName("");
+    setRememberedPools([]);
+    setMessage(null);
+  }
+
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoadingAction("create");
@@ -88,7 +112,9 @@ export default function LandingPage() {
         throw new Error(payload.error ?? "Unable to create pool.");
       }
 
-      localStorage.setItem(SESSION_KEY, JSON.stringify(payload.user));
+      setStoredUserSession(payload.user);
+      rememberPool(payload.pool);
+      setRememberedPools(getRememberedPools());
       router.push(`/pool/${payload.pool.id}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to create pool.");
@@ -114,7 +140,9 @@ export default function LandingPage() {
         throw new Error(payload.error ?? "Unable to join pool.");
       }
 
-      localStorage.setItem(SESSION_KEY, JSON.stringify(payload.user));
+      setStoredUserSession(payload.user);
+      rememberPool(payload.pool);
+      setRememberedPools(getRememberedPools());
       router.push(`/pool/${payload.pool.id}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to join pool.");
@@ -152,6 +180,74 @@ export default function LandingPage() {
         </section>
 
         <section className="space-y-6">
+          {rememberedPools.length > 0 ? (
+            <section className="rounded-[32px] border border-white/60 bg-white/85 p-6 shadow-card backdrop-blur">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-court-700">My pools</p>
+                  <h2 className="mt-2 text-2xl font-semibold text-slatewarm-950">Continue where you left off</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearBrowserSession}
+                  className="rounded-2xl border border-red-300 px-4 py-3 text-sm font-semibold text-red-700 transition hover:bg-red-50"
+                >
+                  Switch user / Clear this browser session
+                </button>
+              </div>
+              <div className="mt-5 space-y-3">
+                {rememberedPools.map((pool) => (
+                  <button
+                    key={pool.poolId}
+                    type="button"
+                    onClick={() => router.push(`/pool/${pool.poolId}`)}
+                    className="flex w-full items-center justify-between rounded-2xl border border-stone-200 bg-stone-50 px-4 py-4 text-left transition hover:border-court-300 hover:bg-white"
+                  >
+                    <div>
+                      <div className="font-semibold text-slatewarm-950">{pool.poolName}</div>
+                      <div className="mt-1 text-sm text-stone-500">Code {pool.poolCode}</div>
+                    </div>
+                    <div className="text-right text-xs uppercase tracking-[0.14em] text-stone-500">
+                      Last opened
+                      <div className="mt-1 text-sm font-semibold normal-case text-slatewarm-950">
+                        {new Date(pool.lastVisitedAt).toLocaleDateString()}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <form onSubmit={handleJoin} className="rounded-[32px] border border-white/60 bg-white/85 p-6 shadow-card backdrop-blur">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-court-700">Join pool</p>
+            <h2 className="mt-2 text-2xl font-semibold text-slatewarm-950">Use an invite code</h2>
+            <div className="mt-5 space-y-4">
+              <input
+                required
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="Your display name"
+                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none ring-0 transition focus:border-court-500"
+              />
+              <input
+                required
+                value={poolCode}
+                onChange={(event) => setPoolCode(event.target.value.toUpperCase())}
+                placeholder="Invite code"
+                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 uppercase outline-none ring-0 transition focus:border-court-500"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loadingAction === "join"}
+              className="mt-5 w-full rounded-2xl border border-slatewarm-950 px-5 py-3 text-sm font-semibold text-slatewarm-950 transition hover:bg-slatewarm-950 hover:text-white disabled:opacity-70"
+            >
+              {loadingAction === "join" ? "Joining..." : "Join pool"}
+            </button>
+            <p className="mt-4 text-sm text-stone-500">Use the invite code from a real pool to join.</p>
+          </form>
+
           <form onSubmit={handleCreate} className="rounded-[32px] border border-white/60 bg-white/85 p-6 shadow-card backdrop-blur">
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-court-700">Create pool</p>
             <h2 className="mt-2 text-2xl font-semibold text-slatewarm-950">Start a new bracket group</h2>
@@ -228,35 +324,6 @@ export default function LandingPage() {
                   ? "Templates are reusable playoff setups saved from admin."
                   : "This copies series into the new pool, but picks and members stay separate."}
             </p>
-          </form>
-
-          <form onSubmit={handleJoin} className="rounded-[32px] border border-white/60 bg-white/85 p-6 shadow-card backdrop-blur">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-court-700">Join pool</p>
-            <h2 className="mt-2 text-2xl font-semibold text-slatewarm-950">Use an invite code</h2>
-            <div className="mt-5 space-y-4">
-              <input
-                required
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                placeholder="Your display name"
-                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none ring-0 transition focus:border-court-500"
-              />
-              <input
-                required
-                value={poolCode}
-                onChange={(event) => setPoolCode(event.target.value.toUpperCase())}
-                placeholder="Invite code"
-                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 uppercase outline-none ring-0 transition focus:border-court-500"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={loadingAction === "join"}
-              className="mt-5 w-full rounded-2xl border border-slatewarm-950 px-5 py-3 text-sm font-semibold text-slatewarm-950 transition hover:bg-slatewarm-950 hover:text-white disabled:opacity-70"
-            >
-              {loadingAction === "join" ? "Joining..." : "Join pool"}
-            </button>
-            <p className="mt-4 text-sm text-stone-500">Use the invite code from a real pool to join.</p>
           </form>
 
           {message ? <p className="text-sm font-medium text-red-700">{message}</p> : null}

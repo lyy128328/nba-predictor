@@ -2,13 +2,17 @@
 
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import {
+  getStoredUserSession,
+  rememberPool,
+  removeRememberedPool
+} from "@/lib/browser-session";
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { Leaderboard } from "@/components/Leaderboard";
+import { PicksBoard } from "@/components/PicksBoard";
 import { SeriesCard } from "@/components/SeriesCard";
 import { SubmitBar } from "@/components/SubmitBar";
-import { Pick, Pool, Series, UserSession } from "@/lib/types";
-
-const SESSION_KEY = "nba-predictor-user";
+import { Pick, Pool, PoolMemberPicks, Series, UserSession } from "@/lib/types";
 
 type SeriesResponse = {
   pool: Pool;
@@ -19,6 +23,7 @@ export default function PoolPage() {
   const poolId = params.id;
   const [pool, setPool] = useState<Pool | null>(null);
   const [leaderboard, setLeaderboard] = useState<Array<{ userId: string; displayName: string; score: number; exactCalls: number; correctWinners: number }>>([]);
+  const [allPicks, setAllPicks] = useState<PoolMemberPicks[]>([]);
   const [picks, setPicks] = useState<Record<string, Pick>>({});
   const [user, setUser] = useState<UserSession | null>(null);
   const [status, setStatus] = useState("Loading pool...");
@@ -26,10 +31,7 @@ export default function PoolPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(SESSION_KEY);
-    if (raw) {
-      setUser(JSON.parse(raw) as UserSession);
-    }
+    setUser(getStoredUserSession());
   }, []);
 
   useEffect(() => {
@@ -42,6 +44,7 @@ export default function PoolPage() {
       ]);
 
       if (!seriesResponse.ok) {
+        removeRememberedPool(poolId);
         setStatus("Pool not found.");
         return;
       }
@@ -50,6 +53,7 @@ export default function PoolPage() {
       const leaderboardPayload = (await leaderboardResponse.json()) as { entries: typeof leaderboard };
 
       setPool(seriesPayload.pool);
+      rememberPool(seriesPayload.pool);
       setLeaderboard(leaderboardPayload.entries);
       setErrorMessage(null);
       setStatus("");
@@ -64,13 +68,22 @@ export default function PoolPage() {
         return;
       }
 
-      const response = await fetch(`/api/picks?poolId=${poolId}&userId=${user.id}`);
-      if (!response.ok) {
+      const [myPicksResponse, allPicksResponse] = await Promise.all([
+        fetch(`/api/picks?poolId=${poolId}&userId=${user.id}`),
+        fetch(`/api/picks?poolId=${poolId}&scope=all&viewerUserId=${user.id}`)
+      ]);
+
+      if (!myPicksResponse.ok) {
         return;
       }
 
-      const payload = (await response.json()) as { picks: Pick[] };
+      const payload = (await myPicksResponse.json()) as { picks: Pick[] };
       setPicks(Object.fromEntries(payload.picks.map((pick) => [pick.seriesId, pick])));
+
+      if (allPicksResponse.ok) {
+        const allPicksPayload = (await allPicksResponse.json()) as { entries: PoolMemberPicks[] };
+        setAllPicks(allPicksPayload.entries);
+      }
     }
 
     void loadPicks();
@@ -139,13 +152,15 @@ export default function PoolPage() {
         return;
       }
 
-      const [leaderboardResponse, seriesResponse] = await Promise.all([
+      const [leaderboardResponse, seriesResponse, allPicksResponse] = await Promise.all([
         fetch(`/api/leaderboard?poolId=${poolId}`),
-        fetch(`/api/series?poolId=${poolId}`)
+        fetch(`/api/series?poolId=${poolId}`),
+        fetch(`/api/picks?poolId=${poolId}&scope=all&viewerUserId=${user.id}`)
       ]);
 
       const leaderboardPayload = (await leaderboardResponse.json()) as { entries: typeof leaderboard; error?: string };
       const seriesPayload = (await seriesResponse.json()) as SeriesResponse & { error?: string };
+      const allPicksPayload = allPicksResponse.ok ? ((await allPicksResponse.json()) as { entries: PoolMemberPicks[] }) : null;
 
       if (!leaderboardResponse.ok || !seriesResponse.ok) {
         const nextError = leaderboardPayload.error ?? seriesPayload.error ?? "Picks saved, but refresh failed.";
@@ -156,6 +171,10 @@ export default function PoolPage() {
 
       setLeaderboard(leaderboardPayload.entries);
       setPool(seriesPayload.pool);
+      rememberPool(seriesPayload.pool);
+      if (allPicksPayload) {
+        setAllPicks(allPicksPayload.entries);
+      }
       setErrorMessage(null);
       setStatus("Picks saved.");
     } catch (error) {
@@ -238,6 +257,7 @@ export default function PoolPage() {
 
           <aside className="space-y-6">
             <Leaderboard entries={leaderboard} />
+            <PicksBoard entries={allPicks} leaderboard={leaderboard} series={pool.series} />
             <ActivityFeed poolId={pool.id} initialItems={pool.activities} />
           </aside>
         </div>

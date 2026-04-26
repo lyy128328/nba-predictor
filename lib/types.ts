@@ -71,6 +71,12 @@ export type UserSession = {
 
 export type PicksByUser = Record<string, Pick[]>;
 
+export type PoolMemberPicks = {
+  userId: string;
+  displayName: string;
+  picks: Pick[];
+};
+
 export type AdminPoolSummary = {
   id: string;
   name: string;

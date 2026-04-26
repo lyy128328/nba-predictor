@@ -1,17 +1,31 @@
 import { NextResponse } from "next/server";
-import { getPool, getUserPicks, saveUserPicks } from "@/lib/data";
+import { getPool, getPoolPicks, getUserPicks, saveUserPicks } from "@/lib/data";
 import { Pick } from "@/lib/types";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const poolId = searchParams.get("poolId");
   const userId = searchParams.get("userId");
+  const viewerUserId = searchParams.get("viewerUserId");
+  const scope = searchParams.get("scope");
 
-  if (!poolId || !userId) {
-    return NextResponse.json({ error: "poolId and userId are required." }, { status: 400 });
+  if (!poolId) {
+    return NextResponse.json({ error: "poolId is required." }, { status: 400 });
   }
 
   try {
+    if (scope === "all") {
+      if (!viewerUserId) {
+        return NextResponse.json({ error: "viewerUserId is required." }, { status: 400 });
+      }
+
+      return NextResponse.json({ entries: await getPoolPicks(poolId, viewerUserId) });
+    }
+
+    if (!userId) {
+      return NextResponse.json({ error: "userId is required." }, { status: 400 });
+    }
+
     return NextResponse.json({ picks: await getUserPicks(poolId, userId) });
   } catch (error) {
     return NextResponse.json(

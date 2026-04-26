@@ -9,6 +9,7 @@ import {
   PlayoffTemplateSummary,
   Pool,
   PoolCreateSource,
+  PoolMemberPicks,
   PoolMember,
   Series,
   UserSession
@@ -343,7 +344,11 @@ async function ensurePoolMembership(poolId: string, user: UserSession) {
     if (insertError) {
       throw insertError;
     }
+
+    return true;
   }
+
+  return false;
 }
 
 async function recordActivities(poolId: string, messages: string[]) {
@@ -556,12 +561,14 @@ export async function joinPool(poolCode: string, user: UserSession) {
     return null;
   }
 
-  await ensurePoolMembership(data.id, user);
-  await recordActivity(data.id, pickOne([
-    `${user.displayName} joined the pool.`,
-    `${user.displayName} entered the chat with playoff confidence.`,
-    `${user.displayName} is in. Bad takes pending.`
-  ]));
+  const joinedForFirstTime = await ensurePoolMembership(data.id, user);
+  if (joinedForFirstTime) {
+    await recordActivity(data.id, pickOne([
+      `${user.displayName} joined the pool.`,
+      `${user.displayName} entered the chat with playoff confidence.`,
+      `${user.displayName} is in. Bad takes pending.`
+    ]));
+  }
   return getPool(data.id);
 }
 
@@ -1071,6 +1078,63 @@ export async function getUserPicks(poolId: string, userId: string): Promise<Pick
     winnerShortName: row.winner_short_name,
     games: row.games
   }));
+}
+
+export async function getPoolPicks(poolId: string, viewerUserId: string): Promise<PoolMemberPicks[]> {
+  const supabase = getSupabaseAdminClient();
+  const pool = await getPool(poolId);
+
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const viewerIsMember = pool.members.some((member) => member.id === viewerUserId);
+  if (!viewerIsMember) {
+    throw new Error("You must be a member of this pool to view picks.");
+  }
+
+  const { data, error } = await supabase
+    .from("picks")
+    .select("user_id, series_id, winner_short_name, games, users!inner(display_name)")
+    .eq("pool_id", poolId);
+
+  if (error) {
+    throw error;
+  }
+
+  const picksByUser = new Map<string, PoolMemberPicks>();
+
+  for (const member of pool.members) {
+    picksByUser.set(member.id, {
+      userId: member.id,
+      displayName: member.displayName,
+      picks: []
+    });
+  }
+
+  for (const row of data ?? []) {
+    const user = Array.isArray(row.users) ? row.users[0] : row.users;
+    const existing: PoolMemberPicks = picksByUser.get(row.user_id) ?? {
+      userId: row.user_id,
+      displayName: user.display_name,
+      picks: []
+    };
+
+    existing.picks.push({
+      seriesId: row.series_id,
+      winnerShortName: row.winner_short_name,
+      games: row.games
+    });
+
+    picksByUser.set(row.user_id, existing);
+  }
+
+  return Array.from(picksByUser.values())
+    .map((entry) => ({
+      ...entry,
+      picks: entry.picks.sort((left, right) => left.seriesId.localeCompare(right.seriesId))
+    }))
+    .sort((left, right) => left.displayName.localeCompare(right.displayName));
 }
 
 function isSeriesLocked(series: Series) {
