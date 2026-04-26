@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSeries, updateSeriesDetails } from "@/lib/data";
+import { createSeries, deleteAllSeries, deleteSeries, updateSeriesDetails } from "@/lib/data";
 
 function isAuthorized(request: Request) {
   const adminSecret = process.env.ADMIN_SECRET;
@@ -98,6 +98,41 @@ export async function PATCH(request: Request) {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to update series." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: Request) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+
+  const body = (await request.json()) as { poolId?: string; seriesId?: string; deleteAll?: boolean };
+
+  if (!body.poolId) {
+    return NextResponse.json({ error: "poolId is required." }, { status: 400 });
+  }
+
+  try {
+    if (body.deleteAll) {
+      await deleteAllSeries(body.poolId);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (!body.seriesId) {
+      return NextResponse.json({ error: "seriesId is required." }, { status: 400 });
+    }
+
+    const deleted = await deleteSeries(body.poolId, body.seriesId);
+    if (!deleted) {
+      return NextResponse.json({ error: "Series not found." }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unable to delete series." },
       { status: 500 }
     );
   }

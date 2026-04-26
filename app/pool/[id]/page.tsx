@@ -22,6 +22,7 @@ export default function PoolPage() {
   const [picks, setPicks] = useState<Record<string, Pick>>({});
   const [user, setUser] = useState<UserSession | null>(null);
   const [status, setStatus] = useState("Loading pool...");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export default function PoolPage() {
 
       setPool(seriesPayload.pool);
       setLeaderboard(leaderboardPayload.entries);
+      setErrorMessage(null);
       setStatus("");
     }
 
@@ -97,39 +99,73 @@ export default function PoolPage() {
   async function handleSubmit() {
     if (!user) {
       setStatus("Create or join a pool from the home page first so we can identify your picks.");
+      setErrorMessage("No active user session for this pool.");
       return;
     }
+
+    const payload = {
+      poolId,
+      userId: user.id,
+      picks: Object.values(picks)
+    };
 
     setSaving(true);
+    setErrorMessage(null);
     setStatus("");
 
-    const response = await fetch("/api/picks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        poolId,
-        userId: user.id,
-        picks: Object.values(picks)
-      })
-    });
+    try {
+      console.log("[submit-picks] request", payload);
 
-    const payload = (await response.json()) as { error?: string };
+      const response = await fetch("/api/picks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
 
-    if (!response.ok) {
-      setStatus(payload.error ?? "Unable to save picks.");
+      const rawText = await response.text();
+      console.log("[submit-picks] response", response.status, rawText);
+
+      let responsePayload: { error?: string } | { ok?: boolean; picks?: Pick[] } = {};
+      try {
+        responsePayload = rawText ? (JSON.parse(rawText) as typeof responsePayload) : {};
+      } catch (error) {
+        console.error("[submit-picks] invalid json response", error);
+      }
+
+      if (!response.ok) {
+        const nextError = "error" in responsePayload ? responsePayload.error ?? "Unable to save picks." : "Unable to save picks.";
+        setStatus(nextError);
+        setErrorMessage(nextError);
+        return;
+      }
+
+      const [leaderboardResponse, seriesResponse] = await Promise.all([
+        fetch(`/api/leaderboard?poolId=${poolId}`),
+        fetch(`/api/series?poolId=${poolId}`)
+      ]);
+
+      const leaderboardPayload = (await leaderboardResponse.json()) as { entries: typeof leaderboard; error?: string };
+      const seriesPayload = (await seriesResponse.json()) as SeriesResponse & { error?: string };
+
+      if (!leaderboardResponse.ok || !seriesResponse.ok) {
+        const nextError = leaderboardPayload.error ?? seriesPayload.error ?? "Picks saved, but refresh failed.";
+        setStatus(nextError);
+        setErrorMessage(nextError);
+        return;
+      }
+
+      setLeaderboard(leaderboardPayload.entries);
+      setPool(seriesPayload.pool);
+      setErrorMessage(null);
+      setStatus("Picks saved.");
+    } catch (error) {
+      const nextError = error instanceof Error ? error.message : "Unexpected error while saving picks.";
+      console.error("[submit-picks] request failed", error);
+      setStatus(nextError);
+      setErrorMessage(nextError);
+    } finally {
       setSaving(false);
-      return;
     }
-
-    const leaderboardResponse = await fetch(`/api/leaderboard?poolId=${poolId}`);
-    const leaderboardPayload = (await leaderboardResponse.json()) as { entries: typeof leaderboard };
-    const seriesResponse = await fetch(`/api/series?poolId=${poolId}`);
-    const seriesPayload = (await seriesResponse.json()) as SeriesResponse;
-
-    setLeaderboard(leaderboardPayload.entries);
-    setPool(seriesPayload.pool);
-    setStatus("Picks saved.");
-    setSaving(false);
   }
 
   if (!pool) {
@@ -171,6 +207,13 @@ export default function PoolPage() {
           </div>
         </section>
 
+        {errorMessage ? (
+          <section className="rounded-[28px] border border-red-200 bg-red-50 px-6 py-4 text-red-900 shadow-card">
+            <p className="text-sm font-semibold">Submit error</p>
+            <p className="mt-1 text-sm">{errorMessage}</p>
+          </section>
+        ) : null}
+
         <div className="grid gap-8 xl:grid-cols-[1.1fr_0.9fr]">
           <section className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
@@ -188,13 +231,14 @@ export default function PoolPage() {
               completedSeries={completedSeries}
               editableSeries={editableSeries}
               saving={saving}
+              canSubmit={completedSeries > 0}
               onSubmit={handleSubmit}
             />
           </section>
 
           <aside className="space-y-6">
             <Leaderboard entries={leaderboard} />
-            <ActivityFeed items={pool.activities} />
+            <ActivityFeed poolId={pool.id} initialItems={pool.activities} />
           </aside>
         </div>
       </div>

@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { AdminPoolSummary, PlayoffTemplateSummary } from "@/lib/types";
 
 type CreateJoinResponse = {
   pool: {
@@ -14,6 +15,11 @@ type CreateJoinResponse = {
   };
 };
 
+type CreateOptionsResponse = {
+  pools: AdminPoolSummary[];
+  templates: PlayoffTemplateSummary[];
+};
+
 const SESSION_KEY = "nba-predictor-user";
 
 export default function LandingPage() {
@@ -21,8 +27,44 @@ export default function LandingPage() {
   const [displayName, setDisplayName] = useState("");
   const [poolName, setPoolName] = useState("");
   const [poolCode, setPoolCode] = useState("");
+  const [createMode, setCreateMode] = useState<"starter" | "template" | "pool">("starter");
+  const [templateId, setTemplateId] = useState("");
+  const [sourcePoolId, setSourcePoolId] = useState("");
+  const [createOptions, setCreateOptions] = useState<CreateOptionsResponse>({ pools: [], templates: [] });
   const [loadingAction, setLoadingAction] = useState<"create" | "join" | null>(null);
+  const [loadingOptions, setLoadingOptions] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadCreateOptions() {
+      try {
+        const response = await fetch("/api/pool/create");
+        const payload = (await response.json()) as CreateOptionsResponse & { error?: string };
+        if (!response.ok) {
+          throw new Error(payload.error ?? "Unable to load create options.");
+        }
+
+        setCreateOptions({
+          pools: payload.pools ?? [],
+          templates: payload.templates ?? []
+        });
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Unable to load create options.");
+      } finally {
+        setLoadingOptions(false);
+      }
+    }
+
+    void loadCreateOptions();
+  }, []);
+
+  const starterLabel = useMemo(() => {
+    if (loadingOptions) {
+      return "Starter bracket";
+    }
+
+    return "Starter bracket";
+  }, [loadingOptions]);
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,7 +75,12 @@ export default function LandingPage() {
       const response = await fetch("/api/pool/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ displayName, name: poolName })
+        body: JSON.stringify({
+          displayName,
+          name: poolName,
+          templateId: createMode === "template" ? templateId : undefined,
+          sourcePoolId: createMode === "pool" ? sourcePoolId : undefined
+        })
       });
       const payload = (await response.json()) as CreateJoinResponse & { error?: string };
 
@@ -123,14 +170,64 @@ export default function LandingPage() {
                 placeholder="Pool name"
                 className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none ring-0 transition focus:border-court-500"
               />
+              <select
+                value={createMode}
+                onChange={(event) => setCreateMode(event.target.value as "starter" | "template" | "pool")}
+                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none ring-0 transition focus:border-court-500"
+              >
+                <option value="starter">{starterLabel}</option>
+                <option value="template">From template</option>
+                <option value="pool">Copy an existing pool's matchups</option>
+              </select>
+              {createMode === "template" ? (
+                <select
+                  required
+                  value={templateId}
+                  onChange={(event) => setTemplateId(event.target.value)}
+                  className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none ring-0 transition focus:border-court-500"
+                >
+                  <option value="">Select a template</option>
+                  {createOptions.templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name} • {template.seriesCount} series
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {createMode === "pool" ? (
+                <select
+                  required
+                  value={sourcePoolId}
+                  onChange={(event) => setSourcePoolId(event.target.value)}
+                  className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none ring-0 transition focus:border-court-500"
+                >
+                  <option value="">Select a source pool</option>
+                  {createOptions.pools.map((pool) => (
+                    <option key={pool.id} value={pool.id}>
+                      {pool.name} ({pool.code}) • {pool.memberCount} members
+                    </option>
+                  ))}
+                </select>
+              ) : null}
             </div>
             <button
               type="submit"
-              disabled={loadingAction === "create"}
+              disabled={
+                loadingAction === "create" ||
+                (createMode === "template" && !templateId) ||
+                (createMode === "pool" && !sourcePoolId)
+              }
               className="mt-5 w-full rounded-2xl bg-court-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-court-700 disabled:opacity-70"
             >
               {loadingAction === "create" ? "Creating..." : "Create pool"}
             </button>
+            <p className="mt-4 text-sm text-stone-500">
+              {createMode === "starter"
+                ? "Start with the default demo playoff bracket."
+                : createMode === "template"
+                  ? "Templates are reusable playoff setups saved from admin."
+                  : "This copies series into the new pool, but picks and members stay separate."}
+            </p>
           </form>
 
           <form onSubmit={handleJoin} className="rounded-[32px] border border-white/60 bg-white/85 p-6 shadow-card backdrop-blur">

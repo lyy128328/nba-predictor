@@ -1,10 +1,14 @@
 import { getSupabaseAdminClient } from "@/lib/supabase";
 import {
+  AdminPoolMember,
   AdminPoolSummary,
   ActivityItem,
+  ActivityPage,
   LeaderboardEntry,
   Pick,
+  PlayoffTemplateSummary,
   Pool,
+  PoolCreateSource,
   PoolMember,
   Series,
   UserSession
@@ -19,6 +23,14 @@ type PoolRow = {
   id: string;
   name: string;
   code: string;
+  created_at: string;
+};
+
+type PlayoffTemplateRow = {
+  id: string;
+  name: string;
+  source_pool_id: string | null;
+  created_at: string;
 };
 
 type SeriesRow = {
@@ -39,18 +51,39 @@ type SeriesRow = {
   result_games: number | null;
 };
 
+type TemplateSeriesRow = {
+  id: string;
+  template_id: string;
+  round: string;
+  lock_at: string;
+  status: "open" | "locked" | "final";
+  home_team_name: string;
+  home_team_short_name: string;
+  home_team_seed: number;
+  home_team_conference: "East" | "West";
+  away_team_name: string;
+  away_team_short_name: string;
+  away_team_seed: number;
+  away_team_conference: "East" | "West";
+  winner_short_name: string | null;
+  result_games: number | null;
+  sort_order: number;
+};
+
 type ActivityRow = {
   id: string;
   message: string;
   created_at: string;
 };
 
-type StarterSeriesTemplate = Omit<SeriesRow, "id" | "pool_id">;
+type StarterSeriesTemplate = Omit<SeriesRow, "id" | "pool_id" | "lock_at"> & {
+  lockOffsetHours: number;
+};
 
 const starterSeriesTemplates: StarterSeriesTemplate[] = [
   {
     round: "East Round 1",
-    lock_at: "2026-04-21T23:00:00.000Z",
+    lockOffsetHours: 24,
     status: "open",
     home_team_name: "Boston Celtics",
     home_team_short_name: "BOS",
@@ -65,7 +98,7 @@ const starterSeriesTemplates: StarterSeriesTemplate[] = [
   },
   {
     round: "East Round 1",
-    lock_at: "2026-04-21T23:30:00.000Z",
+    lockOffsetHours: 26,
     status: "open",
     home_team_name: "New York Knicks",
     home_team_short_name: "NYK",
@@ -80,7 +113,7 @@ const starterSeriesTemplates: StarterSeriesTemplate[] = [
   },
   {
     round: "West Round 1",
-    lock_at: "2026-04-22T02:00:00.000Z",
+    lockOffsetHours: 29,
     status: "open",
     home_team_name: "Oklahoma City Thunder",
     home_team_short_name: "OKC",
@@ -95,7 +128,7 @@ const starterSeriesTemplates: StarterSeriesTemplate[] = [
   },
   {
     round: "West Round 1",
-    lock_at: "2026-04-22T03:00:00.000Z",
+    lockOffsetHours: 31,
     status: "open",
     home_team_name: "Denver Nuggets",
     home_team_short_name: "DEN",
@@ -348,14 +381,128 @@ async function seedStarterSeries(poolId: string) {
 
   const { error } = await supabase
     .from("series")
-    .insert(starterSeriesTemplates.map((series) => ({ ...series, pool_id: poolId })));
+    .insert(
+      starterSeriesTemplates.map(({ lockOffsetHours, ...series }) => ({
+        ...series,
+        pool_id: poolId,
+        lock_at: new Date(Date.now() + lockOffsetHours * 60 * 60 * 1000).toISOString()
+      }))
+    );
 
   if (error) {
     throw error;
   }
 }
 
-export async function createPool(name: string, user: UserSession) {
+async function insertSeriesRowsForPool(
+  targetPoolId: string,
+  rows: Array<{
+    round: string;
+    lock_at: string;
+    status: "open" | "locked" | "final";
+    home_team_name: string;
+    home_team_short_name: string;
+    home_team_seed: number;
+    home_team_conference: "East" | "West";
+    away_team_name: string;
+    away_team_short_name: string;
+    away_team_seed: number;
+    away_team_conference: "East" | "West";
+    winner_short_name: string | null;
+    result_games: number | null;
+  }>
+) {
+  const supabase = getSupabaseAdminClient();
+  const { error } = await supabase.from("series").insert(
+    rows.map((series) => ({
+      pool_id: targetPoolId,
+      ...series
+    }))
+  );
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function seedSeriesFromTemplate(templateId: string, poolId: string) {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("template_series")
+    .select("*")
+    .eq("template_id", templateId)
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error("Selected template has no series.");
+  }
+
+  await insertSeriesRowsForPool(
+    poolId,
+    data.map((series) => ({
+      round: series.round,
+      lock_at: series.lock_at,
+      status: series.status,
+      home_team_name: series.home_team_name,
+      home_team_short_name: series.home_team_short_name,
+      home_team_seed: series.home_team_seed,
+      home_team_conference: series.home_team_conference,
+      away_team_name: series.away_team_name,
+      away_team_short_name: series.away_team_short_name,
+      away_team_seed: series.away_team_seed,
+      away_team_conference: series.away_team_conference,
+      winner_short_name: series.winner_short_name,
+      result_games: series.result_games
+    }))
+  );
+}
+
+async function seedSeriesFromPool(sourcePoolId: string, targetPoolId: string) {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("series")
+    .select("*")
+    .eq("pool_id", sourcePoolId)
+    .order("lock_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error("Selected source pool has no series.");
+  }
+
+  await insertSeriesRowsForPool(
+    targetPoolId,
+    data.map((series) => ({
+      round: series.round,
+      lock_at: series.lock_at,
+      status: series.status,
+      home_team_name: series.home_team_name,
+      home_team_short_name: series.home_team_short_name,
+      home_team_seed: series.home_team_seed,
+      home_team_conference: series.home_team_conference,
+      away_team_name: series.away_team_name,
+      away_team_short_name: series.away_team_short_name,
+      away_team_seed: series.away_team_seed,
+      away_team_conference: series.away_team_conference,
+      winner_short_name: series.winner_short_name,
+      result_games: series.result_games
+    }))
+  );
+}
+
+type CreatePoolSourceInput = {
+  templateId?: string;
+  sourcePoolId?: string;
+};
+
+export async function createPool(name: string, user: UserSession, source?: CreatePoolSourceInput) {
   const supabase = getSupabaseAdminClient();
   const trimmedName = name.trim();
 
@@ -375,7 +522,13 @@ export async function createPool(name: string, user: UserSession) {
   }
 
   await ensurePoolMembership(data.id, user);
-  await seedStarterSeries(data.id);
+  if (source?.templateId) {
+    await seedSeriesFromTemplate(source.templateId, data.id);
+  } else if (source?.sourcePoolId) {
+    await seedSeriesFromPool(source.sourcePoolId, data.id);
+  } else {
+    await seedStarterSeries(data.id);
+  }
   await recordActivity(data.id, pickOne([
     `${user.displayName} created ${trimmedName}.`,
     `${user.displayName} started ${trimmedName}. Trouble begins.`,
@@ -417,7 +570,7 @@ export async function getPool(poolId: string): Promise<Pool | null> {
 
   const { data: poolRow, error: poolError } = await supabase
     .from("pools")
-    .select("id, name, code")
+    .select("id, name, code, created_at")
     .eq("id", poolId)
     .maybeSingle<PoolRow>();
 
@@ -479,11 +632,47 @@ export async function getPool(poolId: string): Promise<Pool | null> {
   };
 }
 
+export async function getPoolActivities(poolId: string, offset = 0, limit = 12): Promise<ActivityPage> {
+  const supabase = getSupabaseAdminClient();
+  const safeOffset = Math.max(0, offset);
+  const safeLimit = Math.min(Math.max(1, limit), 50);
+
+  const [{ data, error }, { count, error: countError }] = await Promise.all([
+    supabase
+      .from("activities")
+      .select("id, message, created_at")
+      .eq("pool_id", poolId)
+      .order("created_at", { ascending: false })
+      .range(safeOffset, safeOffset + safeLimit - 1),
+    supabase
+      .from("activities")
+      .select("*", { count: "exact", head: true })
+      .eq("pool_id", poolId)
+  ]);
+
+  if (error) {
+    throw error;
+  }
+
+  if (countError) {
+    throw countError;
+  }
+
+  const total = count ?? 0;
+  return {
+    items: (data ?? []).map((row) => mapActivity(row as ActivityRow)),
+    total,
+    offset: safeOffset,
+    limit: safeLimit,
+    hasMore: safeOffset + safeLimit < total
+  };
+}
+
 export async function listAdminPools(): Promise<AdminPoolSummary[]> {
   const supabase = getSupabaseAdminClient();
   const { data, error } = await supabase
     .from("pools")
-    .select("id, name, code")
+    .select("id, name, code, created_at")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -495,18 +684,374 @@ export async function listAdminPools(): Promise<AdminPoolSummary[]> {
     pools.map(async (pool) => {
       const fullPool = await getPool(pool.id);
       const leaderboard = await computeLeaderboard(pool.id);
+      const { data: latestActivity, error: activityError } = await supabase
+        .from("activities")
+        .select("created_at")
+        .eq("pool_id", pool.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<{ created_at: string }>();
+
+      if (activityError) {
+        throw activityError;
+      }
 
       return {
         id: pool.id,
         name: pool.name,
         code: pool.code,
         memberCount: fullPool?.members.length ?? 0,
-        leaderboard
+        leaderboard,
+        leaderDisplayName: leaderboard[0]?.displayName ?? null,
+        lastUpdatedAt: latestActivity?.created_at ?? pool.created_at
       };
     })
   );
 
   return summaries;
+}
+
+export async function listPlayoffTemplates(): Promise<PlayoffTemplateSummary[]> {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("playoff_templates")
+    .select("id, name, source_pool_id, created_at")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  const templates = (data ?? []) as PlayoffTemplateRow[];
+  const summaries = await Promise.all(
+    templates.map(async (template) => {
+      const { count, error: countError } = await supabase
+        .from("template_series")
+        .select("*", { count: "exact", head: true })
+        .eq("template_id", template.id);
+
+      if (countError) {
+        throw countError;
+      }
+
+      return {
+        id: template.id,
+        name: template.name,
+        seriesCount: count ?? 0,
+        createdAt: template.created_at,
+        sourcePoolId: template.source_pool_id
+      };
+    })
+  );
+
+  return summaries;
+}
+
+export async function listPoolCreateSources(): Promise<PoolCreateSource> {
+  const [pools, templates] = await Promise.all([listAdminPools(), listPlayoffTemplates()]);
+  return { pools, templates };
+}
+
+export async function deleteSeries(poolId: string, seriesId: string) {
+  const supabase = getSupabaseAdminClient();
+  const pool = await getPool(poolId);
+
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const target = pool.series.find((series) => series.id === seriesId);
+  if (!target) {
+    return false;
+  }
+
+  const { error } = await supabase
+    .from("series")
+    .delete()
+    .eq("pool_id", poolId)
+    .eq("id", seriesId);
+
+  if (error) {
+    throw error;
+  }
+
+  await recordActivity(poolId, `Admin deleted ${target.awayTeam.shortName} at ${target.homeTeam.shortName}.`);
+  return true;
+}
+
+export async function deletePool(poolId: string) {
+  const supabase = getSupabaseAdminClient();
+  const { error } = await supabase.from("pools").delete().eq("id", poolId);
+
+  if (error) {
+    throw error;
+  }
+
+  return true;
+}
+
+export async function deleteAllSeries(poolId: string) {
+  const supabase = getSupabaseAdminClient();
+  const pool = await getPool(poolId);
+
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const { error } = await supabase.from("series").delete().eq("pool_id", poolId);
+  if (error) {
+    throw error;
+  }
+
+  await recordActivity(poolId, `Admin cleared all series from ${pool.name}.`);
+  return true;
+}
+
+export async function cloneSeriesBetweenPools(sourcePoolId: string, targetPoolId: string, replaceExisting: boolean) {
+  const supabase = getSupabaseAdminClient();
+
+  if (sourcePoolId === targetPoolId) {
+    throw new Error("Source and target pool must be different.");
+  }
+
+  const [sourcePool, targetPool] = await Promise.all([getPool(sourcePoolId), getPool(targetPoolId)]);
+
+  if (!sourcePool) {
+    throw new Error("Source pool not found.");
+  }
+
+  if (!targetPool) {
+    throw new Error("Target pool not found.");
+  }
+
+  const { data: sourceSeries, error: sourceError } = await supabase
+    .from("series")
+    .select("*")
+    .eq("pool_id", sourcePoolId)
+    .order("lock_at", { ascending: true });
+
+  if (sourceError) {
+    throw sourceError;
+  }
+
+  if (!sourceSeries || sourceSeries.length === 0) {
+    throw new Error("Source pool has no series to copy.");
+  }
+
+  if (replaceExisting) {
+    const { error: deleteError } = await supabase.from("series").delete().eq("pool_id", targetPoolId);
+    if (deleteError) {
+      throw deleteError;
+    }
+  }
+
+  const { error: insertError } = await supabase.from("series").insert(
+    sourceSeries.map((series) => ({
+      pool_id: targetPoolId,
+      round: series.round,
+      lock_at: series.lock_at,
+      status: series.status,
+      home_team_name: series.home_team_name,
+      home_team_short_name: series.home_team_short_name,
+      home_team_seed: series.home_team_seed,
+      home_team_conference: series.home_team_conference,
+      away_team_name: series.away_team_name,
+      away_team_short_name: series.away_team_short_name,
+      away_team_seed: series.away_team_seed,
+      away_team_conference: series.away_team_conference,
+      winner_short_name: series.winner_short_name,
+      result_games: series.result_games
+    }))
+  );
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  await recordActivity(
+    targetPoolId,
+    `Admin copied ${sourceSeries.length} series from ${sourcePool.name} into ${targetPool.name}.`
+  );
+
+  return sourceSeries.length;
+}
+
+export async function createTemplateFromPool(poolId: string, name: string) {
+  const supabase = getSupabaseAdminClient();
+  const pool = await getPool(poolId);
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    throw new Error("Template name is required.");
+  }
+
+  const { data: template, error: templateError } = await supabase
+    .from("playoff_templates")
+    .insert([{ name: trimmedName, source_pool_id: poolId }])
+    .select("id, name, source_pool_id, created_at")
+    .single<PlayoffTemplateRow>();
+
+  if (templateError) {
+    throw templateError;
+  }
+
+  const { data: seriesRows, error: seriesError } = await supabase
+    .from("series")
+    .select("*")
+    .eq("pool_id", poolId)
+    .order("lock_at", { ascending: true });
+
+  if (seriesError) {
+    throw seriesError;
+  }
+
+  if (!seriesRows || seriesRows.length === 0) {
+    throw new Error("Pool has no series to save as a template.");
+  }
+
+  const { error: insertError } = await supabase.from("template_series").insert(
+    seriesRows.map((series, index) => ({
+      template_id: template.id,
+      round: series.round,
+      lock_at: series.lock_at,
+      status: series.status,
+      home_team_name: series.home_team_name,
+      home_team_short_name: series.home_team_short_name,
+      home_team_seed: series.home_team_seed,
+      home_team_conference: series.home_team_conference,
+      away_team_name: series.away_team_name,
+      away_team_short_name: series.away_team_short_name,
+      away_team_seed: series.away_team_seed,
+      away_team_conference: series.away_team_conference,
+      winner_short_name: series.winner_short_name,
+      result_games: series.result_games,
+      sort_order: index
+    }))
+  );
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  await recordActivity(poolId, `Admin saved ${pool.name} as template ${trimmedName}.`);
+
+  return {
+    id: template.id,
+    name: template.name,
+    sourcePoolId: template.source_pool_id,
+    createdAt: template.created_at,
+    seriesCount: seriesRows.length
+  };
+}
+
+export async function renameTemplate(templateId: string, name: string) {
+  const supabase = getSupabaseAdminClient();
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    throw new Error("Template name is required.");
+  }
+
+  const { data, error } = await supabase
+    .from("playoff_templates")
+    .update({ name: trimmedName })
+    .eq("id", templateId)
+    .select("id, name, source_pool_id, created_at")
+    .maybeSingle<PlayoffTemplateRow>();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error("Template not found.");
+  }
+
+  const { count, error: countError } = await supabase
+    .from("template_series")
+    .select("*", { count: "exact", head: true })
+    .eq("template_id", templateId);
+
+  if (countError) {
+    throw countError;
+  }
+
+  return {
+    id: data.id,
+    name: data.name,
+    sourcePoolId: data.source_pool_id,
+    createdAt: data.created_at,
+    seriesCount: count ?? 0
+  };
+}
+
+export async function deleteTemplate(templateId: string) {
+  const supabase = getSupabaseAdminClient();
+  const { error } = await supabase.from("playoff_templates").delete().eq("id", templateId);
+
+  if (error) {
+    throw error;
+  }
+
+  return true;
+}
+
+export async function removePoolMember(poolId: string, userId: string) {
+  const supabase = getSupabaseAdminClient();
+  const pool = await getPool(poolId);
+
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const member = pool.members.find((entry) => entry.id === userId);
+  if (!member) {
+    return false;
+  }
+
+  const [{ error: pickError }, { error: memberError }] = await Promise.all([
+    supabase.from("picks").delete().eq("pool_id", poolId).eq("user_id", userId),
+    supabase.from("pool_members").delete().eq("pool_id", poolId).eq("user_id", userId)
+  ]);
+
+  if (pickError) {
+    throw pickError;
+  }
+  if (memberError) {
+    throw memberError;
+  }
+
+  await recordActivity(poolId, `Admin removed ${member.displayName} from the pool.`);
+  return true;
+}
+
+export async function listAdminPoolMembers(poolId: string): Promise<AdminPoolMember[]> {
+  const pool = await getPool(poolId);
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const leaderboard = await computeLeaderboard(poolId);
+  const leaderboardByUser = new Map(leaderboard.map((entry) => [entry.userId, entry]));
+
+  return pool.members
+    .map((member) => {
+      const stats = leaderboardByUser.get(member.id);
+      return {
+        ...member,
+        score: stats?.score ?? 0,
+        exactCalls: stats?.exactCalls ?? 0,
+        correctWinners: stats?.correctWinners ?? 0
+      };
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return left.displayName.localeCompare(right.displayName);
+    });
 }
 
 export async function getUserPicks(poolId: string, userId: string): Promise<Pick[]> {
@@ -545,6 +1090,21 @@ export async function saveUserPicks(poolId: string, userId: string, picks: Pick[
 
   const validSeriesIds = new Set(pool.series.map((series) => series.id));
   const lockedSeriesIds = new Set(pool.series.filter(isSeriesLocked).map((series) => series.id));
+  const editableSeriesIds = pool.series.filter((series) => !isSeriesLocked(series)).map((series) => series.id);
+  const member = pool.members.find((entry) => entry.id === userId);
+
+  if (!member) {
+    throw new Error("You are not a member of this pool. Rejoin from the landing page and try again.");
+  }
+
+  if (editableSeriesIds.length === 0) {
+    throw new Error("All series in this pool are locked. Update lock times in admin or create new series.");
+  }
+
+  if (picks.length === 0) {
+    throw new Error("Pick at least one series before submitting.");
+  }
+
   const sanitized = picks.filter(
     (pick) =>
       validSeriesIds.has(pick.seriesId) &&
@@ -555,12 +1115,23 @@ export async function saveUserPicks(poolId: string, userId: string, picks: Pick[
       pick.games <= 7
   );
 
-  const { error: deleteError } = await supabase
-    .from("picks")
-    .delete()
-    .eq("pool_id", poolId)
-    .eq("user_id", userId)
-    .not("series_id", "in", `(${Array.from(lockedSeriesIds).map((id) => `"${id}"`).join(",") || "\"__none__\""})`);
+  if (sanitized.length === 0) {
+    throw new Error("No editable picks were submitted. The selected series may already be locked.");
+  }
+
+  let deleteQuery = supabase.from("picks").delete().eq("pool_id", poolId).eq("user_id", userId);
+
+  if (lockedSeriesIds.size > 0) {
+    deleteQuery = deleteQuery.not(
+      "series_id",
+      "in",
+      `(${Array.from(lockedSeriesIds)
+        .map((id) => `"${id}"`)
+        .join(",")})`
+    );
+  }
+
+  const { error: deleteError } = await deleteQuery;
 
   if (deleteError) {
     throw deleteError;
@@ -582,28 +1153,25 @@ export async function saveUserPicks(poolId: string, userId: string, picks: Pick[
     }
   }
 
-  const member = pool.members.find((entry) => entry.id === userId);
-  if (member) {
-    const changedMessages = sanitized
-      .filter((pick) => {
-        const previous = existingBySeries.get(pick.seriesId);
-        return !previous || previous.winnerShortName !== pick.winnerShortName || previous.games !== pick.games;
-      })
-      .slice(0, 4)
-      .map((pick) => {
-        const series = pool.series.find((entry) => entry.id === pick.seriesId);
-        return series ? buildPickActivityMessage(member.displayName, series, pick) : "";
-      });
+  const changedMessages = sanitized
+    .filter((pick) => {
+      const previous = existingBySeries.get(pick.seriesId);
+      return !previous || previous.winnerShortName !== pick.winnerShortName || previous.games !== pick.games;
+    })
+    .slice(0, 4)
+    .map((pick) => {
+      const series = pool.series.find((entry) => entry.id === pick.seriesId);
+      return series ? buildPickActivityMessage(member.displayName, series, pick) : "";
+    });
 
-    await recordActivities(poolId, [
-      pickOne([
-        `${member.displayName} submitted picks for ${sanitized.length} series.`,
-        `${member.displayName} turned in picks for ${sanitized.length} series.`,
-        `${member.displayName} locked a fresh batch of takes: ${sanitized.length} series.`
-      ]),
-      ...changedMessages
-    ]);
-  }
+  await recordActivities(poolId, [
+    pickOne([
+      `${member.displayName} submitted picks for ${sanitized.length} series.`,
+      `${member.displayName} turned in picks for ${sanitized.length} series.`,
+      `${member.displayName} locked a fresh batch of takes: ${sanitized.length} series.`
+    ]),
+    ...changedMessages
+  ]);
 
   return sanitized;
 }
@@ -723,7 +1291,7 @@ export async function updateSeriesResult(poolId: string, seriesId: string, winne
     .map((row: { user_id: string; winner_short_name: string; games: number; users: { display_name: string } | { display_name: string }[] }) => {
       const user = Array.isArray(row.users) ? row.users[0] : row.users;
       const points =
-        row.winner_short_name === winnerShortName ? (row.games === games ? 3 : 1) : 0;
+        row.winner_short_name === winnerShortName ? (row.games === games ? 2 : 1) : 0;
 
       return buildScoreActivityMessage(
         user.display_name,
@@ -748,6 +1316,44 @@ export async function updateSeriesResult(poolId: string, seriesId: string, winne
   ]);
 
   return series;
+}
+
+export async function clearSeriesResult(poolId: string, seriesId: string) {
+  const supabase = getSupabaseAdminClient();
+  const pool = await getPool(poolId);
+
+  if (!pool) {
+    throw new Error("Pool not found.");
+  }
+
+  const target = pool.series.find((series) => series.id === seriesId);
+  if (!target) {
+    return null;
+  }
+
+  const nextStatus = new Date(target.lockAt).getTime() > Date.now() ? "open" : "locked";
+  const { data, error } = await supabase
+    .from("series")
+    .update({
+      winner_short_name: null,
+      result_games: null,
+      status: nextStatus
+    })
+    .eq("pool_id", poolId)
+    .eq("id", seriesId)
+    .select("*")
+    .maybeSingle<SeriesRow>();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  await recordActivity(poolId, `Admin cleared the result for ${target.awayTeam.shortName} at ${target.homeTeam.shortName}.`);
+  return mapSeries(data);
 }
 
 type SeriesAdminInput = {

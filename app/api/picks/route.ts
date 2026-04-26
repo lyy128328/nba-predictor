@@ -37,6 +37,13 @@ export async function POST(request: Request) {
     const sanitized = await saveUserPicks(body.poolId, body.userId, body.picks);
     return NextResponse.json({ ok: true, picks: sanitized });
   } catch (error) {
+    console.error("[api/picks] unable to save picks", {
+      poolId: body.poolId,
+      userId: body.userId,
+      picksCount: body.picks?.length ?? 0,
+      error
+    });
+
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to save picks." },
       { status: 500 }

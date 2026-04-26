@@ -2,6 +2,7 @@
 
 import clsx from "clsx";
 import { Pick, Series } from "@/lib/types";
+import { formatPacificDateTime } from "@/lib/time";
 
 type Props = {
   series: Series;
@@ -106,7 +107,7 @@ export function SeriesCard({ series, pick, onChange }: Props) {
           Locked. Picks can no longer be edited for this series.
         </div>
       ) : (
-        <p className="mt-5 text-sm text-stone-500">Locks at {new Date(series.lockAt).toLocaleString()}</p>
+        <p className="mt-5 text-sm text-stone-500">Locks at {formatPacificDateTime(series.lockAt)}</p>
       )}
     </article>
   );

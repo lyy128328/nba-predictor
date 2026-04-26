@@ -39,6 +39,14 @@ export type ActivityItem = {
   createdAt: string;
 };
 
+export type ActivityPage = {
+  items: ActivityItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+};
+
 export type Pool = {
   id: string;
   name: string;
@@ -69,4 +77,25 @@ export type AdminPoolSummary = {
   code: string;
   memberCount: number;
   leaderboard: LeaderboardEntry[];
+  leaderDisplayName: string | null;
+  lastUpdatedAt: string;
+};
+
+export type AdminPoolMember = PoolMember & {
+  score: number;
+  exactCalls: number;
+  correctWinners: number;
+};
+
+export type PlayoffTemplateSummary = {
+  id: string;
+  name: string;
+  seriesCount: number;
+  createdAt: string;
+  sourcePoolId: string | null;
+};
+
+export type PoolCreateSource = {
+  pools: AdminPoolSummary[];
+  templates: PlayoffTemplateSummary[];
 };
